@@ -1,0 +1,45 @@
+<!-- livebook:{"persist_outputs":true} -->
+
+# Chapter 1
+
+## Sum server using Agent
+
+```elixir
+defmodule SumAgent do
+  use Agent
+
+  def start_link do
+    Agent.start_link(fn -> nil end, name: __MODULE__)
+  end
+
+  def sum(a, b) do
+    Agent.get(__MODULE__, fn _ -> a + b end)
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, SumAgent, <<70, 79, 82, 49, 0, 0, 10, ...>>, {:sum, 2}}
+```
+
+```elixir
+SumAgent.start_link()
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:ok, #PID<0.166.0>}
+```
+
+```elixir
+SumAgent.sum(5, 3)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+8
+```
