@@ -1,0 +1,169 @@
+<!-- livebook:{"file_entries":[{"name":"todos.csv","type":"attachment"}]} -->
+
+# Chapter 4: Todo List
+
+```elixir
+Mix.install(
+  [
+    {:nimble_csv, "~> 1.2"},
+    {:kino, "~> 0.12.0"},
+    {:explorer, "~> 0.8.2"}
+  ],
+  consolidate_protocols: false
+)
+```
+
+## Module
+
+```elixir
+defmodule TodoList.Task do
+  @enforce_keys [:title, :date]
+  defstruct [:title, :date]
+
+  @type t :: %__MODULE__{
+          date: Date.t(),
+          title: String.t()
+        }
+
+  @spec new(Date.t(), String.t()) :: t()
+  def new(date \\ DateTime.to_date(DateTime.utc_now()), title) do
+    %__MODULE__{date: date, title: title}
+  end
+end
+
+defmodule TodoList do
+  defstruct next_id: 1, entries: %{}
+
+  @type t :: %__MODULE__{
+          next_id: integer,
+          entries: %{integer => Task.t()}
+        }
+
+  @spec new([TodoList.Task.t()]) :: t()
+  def new(entries \\ []) do
+    Enum.reduce(entries, %__MODULE__{}, &add_entry(&2, &1))
+  end
+
+  @spec add_entry(t(), TodoList.Task.t()) :: t()
+  def add_entry(%__MODULE__{} = todo_list, entry) do
+    entries = Map.put(todo_list.entries, todo_list.next_id, entry)
+    %__MODULE__{todo_list | next_id: todo_list.next_id + 1, entries: entries}
+  end
+
+  @spec entries(t(), Date.t()) :: [TodoList.Task.t()]
+  def entries(%__MODULE__{} = todo_list, date) do
+    todo_list.entries
+    |> Map.values()
+    |> Enum.filter(fn entry -> entry.date == date end)
+  end
+
+  @spec update_entry(t(), integer, (TodoList.Task.t() -> TodoList.Task.t())) :: t()
+  def update_entry(%__MODULE__{} = todo_list, entry_id, updater_fn) do
+    if Map.has_key?(todo_list.entries, entry_id) do
+      new_entries = Map.update!(todo_list.entries, entry_id, updater_fn)
+      %__MODULE__{todo_list | entries: new_entries}
+    else
+      todo_list
+    end
+  end
+
+  @spec delete_entry(t(), integer) :: t()
+  def delete_entry(%__MODULE__{} = todo_list, entry_id) do
+    Map.delete(todo_list.entries, entry_id)
+  end
+end
+```
+
+## CSV
+
+```elixir
+NimbleCSV.define(TodoListCSVParser, [])
+```
+
+```elixir
+defmodule TodoList.CSV do
+  def import(path) do
+    path
+    |> File.stream!()
+    |> TodoListCSVParser.parse_stream(skip_headers: false)
+    |> Stream.map(&apply(TodoList.Task, :new, &1))
+    |> TodoList.new()
+  end
+end
+```
+
+```elixir
+csv_inspect = fn path ->
+  path
+  |> Explorer.DataFrame.from_csv!(header: false, parse_dates: true)
+  |> Explorer.DataFrame.rename(~w(date title))
+  |> Explorer.DataFrame.print()
+  |> IO.inspect()
+
+  path
+end
+
+Kino.nothing()
+```
+
+```elixir
+Kino.FS.file_path("todos.csv")
+|> csv_inspect.()
+|> TodoList.CSV.import()
+```
+
+```elixir
+form =
+  Kino.Control.form(
+    [csv: Kino.Input.file("Custom CSV input", accept: ~w(.csv))],
+    submit: "Submit"
+  )
+
+form
+|> Kino.Control.stream()
+|> Kino.listen(fn %{data: %{csv: %{file_ref: {:file, _} = file_ref}}} ->
+  Kino.Input.file_path(file_ref)
+  |> csv_inspect.()
+  |> TodoList.CSV.import()
+  |> Kino.render()
+end)
+
+form
+```
+
+## Protocols
+
+```elixir
+defimpl String.Chars, for: TodoList do
+  def to_string(_) do
+    "#TodoList"
+  end
+end
+```
+
+```elixir
+IO.puts(TodoList.new())
+```
+
+```elixir
+defimpl Collectable, for: TodoList do
+  def into(original) do
+    {original, &into_callback/2}
+  end
+
+  defp into_callback(todo_list, {:cont, entry}) do
+    TodoList.add_entry(todo_list, entry)
+  end
+
+  defp into_callback(todo_list, :done), do: todo_list
+  defp into_callback(_todo_list, :halt), do: :ok
+end
+```
+
+```elixir
+Kino.FS.file_path("todos.csv")
+|> File.stream!()
+|> TodoListCSVParser.parse_stream(skip_headers: false)
+|> Stream.map(&apply(TodoList.Task, :new, &1))
+|> Enum.into(TodoList.new())
+```
