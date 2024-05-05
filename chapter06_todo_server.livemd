@@ -1,0 +1,309 @@
+# Chapter 6: Refactoring the to-do server
+
+## Server Process
+
+```elixir
+defmodule ServerProcess do
+  @callback init(init_arg :: term) :: state :: term
+  @callback handle_call(request :: term, state :: term) :: {reply :: term, new_state :: term}
+  @callback handle_cast(request :: term, state :: term) :: new_state :: term
+
+  def start(callback_module, init_arg) do
+    spawn(fn ->
+      initial_state = callback_module.init(init_arg)
+      loop(callback_module, initial_state)
+    end)
+  end
+
+  def loop(callback_module, current_state) do
+    receive do
+      {:call, request, caller} ->
+        {response, new_state} = callback_module.handle_call(request, current_state)
+        send(caller, {:response, response})
+        loop(callback_module, new_state)
+
+      {:cast, request} ->
+        new_state = callback_module.handle_cast(request, current_state)
+        loop(callback_module, new_state)
+    end
+  end
+
+  def call(server_pid, request) do
+    send(server_pid, {:call, request, self()})
+
+    receive do
+      {:response, response} -> response
+    end
+  end
+
+  def cast(server_pid, request) do
+    send(server_pid, {:cast, request})
+  end
+end
+```
+
+## Key-Value Store
+
+```elixir
+defmodule KeyValueStore do
+  @behaviour ServerProcess
+
+  ## Client ##
+
+  def start(init \\ %{}) do
+    ServerProcess.start(__MODULE__, init)
+  end
+
+  def get(pid, key) do
+    ServerProcess.call(pid, {:get, key})
+  end
+
+  def put(pid, key, value) do
+    ServerProcess.cast(pid, {:put, key, value})
+  end
+
+  ## API ##
+
+  @impl true
+  def init(_init_arg), do: %{}
+
+  @impl true
+  def handle_call({:get, key}, state) do
+    {Map.get(state, key), state}
+  end
+
+  @impl true
+  def handle_cast({:put, key, value}, state) do
+    Map.put(state, key, value)
+  end
+end
+```
+
+```elixir
+# pid = ServerProcess.start(KeyValueStore)
+pid = KeyValueStore.start()
+```
+
+```elixir
+# ServerProcess.call(pid, {:put, :some_key, :some_value})
+KeyValueStore.put(pid, :some_key, :some_value)
+```
+
+```elixir
+# ServerProcess.call(pid, {:get, :some_key})
+KeyValueStore.get(pid, :some_key)
+```
+
+## Todo List
+
+```elixir
+defmodule TodoList.Task do
+  @enforce_keys [:title, :date]
+  defstruct [:title, :date]
+
+  @type t :: %__MODULE__{
+          date: Date.t(),
+          title: String.t()
+        }
+
+  @spec new(Date.t(), String.t()) :: t()
+  def new(date \\ DateTime.to_date(DateTime.utc_now()), title) do
+    %__MODULE__{date: date, title: title}
+  end
+end
+
+defmodule TodoList do
+  defstruct next_id: 1, entries: %{}
+
+  @type t :: %__MODULE__{
+          next_id: integer,
+          entries: %{integer => Task.t()}
+        }
+
+  @spec new([TodoList.Task.t()]) :: t()
+  def new(entries \\ []) do
+    Enum.reduce(entries, %__MODULE__{}, &add_entry(&2, &1))
+  end
+
+  @spec add_entry(t(), TodoList.Task.t()) :: t()
+  def add_entry(%__MODULE__{} = todo_list, entry) do
+    entries = Map.put(todo_list.entries, todo_list.next_id, entry)
+    %__MODULE__{todo_list | next_id: todo_list.next_id + 1, entries: entries}
+  end
+
+  @spec entries(t()) :: [TodoList.Task.t()]
+  def entries(%__MODULE__{} = todo_list) do
+    Map.values(todo_list.entries)
+  end
+
+  @spec entries(t(), Date.t()) :: [TodoList.Task.t()]
+  def entries(%__MODULE__{} = todo_list, date) do
+    todo_list.entries
+    |> Map.values()
+    |> Enum.filter(fn entry -> entry.date == date end)
+  end
+
+  @spec update_entry(t(), integer, (TodoList.Task.t() -> TodoList.Task.t())) :: t()
+  def update_entry(%__MODULE__{} = todo_list, entry_id, updater_fn) do
+    if Map.has_key?(todo_list.entries, entry_id) do
+      new_entries = Map.update!(todo_list.entries, entry_id, updater_fn)
+      %__MODULE__{todo_list | entries: new_entries}
+    else
+      todo_list
+    end
+  end
+
+  @spec delete_entry(t(), integer) :: t()
+  def delete_entry(%__MODULE__{} = todo_list, entry_id) do
+    Map.delete(todo_list.entries, entry_id)
+  end
+end
+```
+
+## Todo Server
+
+```elixir
+defmodule TodoServer do
+  @behaviour ServerProcess
+
+  ## Client ##
+
+  def start(init_list \\ []) do
+    ServerProcess.start(__MODULE__, init_list)
+  end
+
+  def entries(pid) do
+    ServerProcess.call(pid, :entries)
+  end
+
+  def entries(pid, date) do
+    ServerProcess.call(pid, {:entries, date})
+  end
+
+  def add(pid, task) do
+    ServerProcess.cast(pid, {:add_entry, task})
+  end
+
+  def update(pid, id, updater_fn) do
+    ServerProcess.cast(pid, {:update_entry, id, updater_fn})
+  end
+
+  def delete(pid, id) do
+    ServerProcess.cast(pid, {:delete_entry, id})
+  end
+
+  ## API ##
+
+  @impl true
+  def init(init_list \\ []), do: TodoList.new(init_list)
+
+  @impl true
+  def handle_call(:entries, todo_list) do
+    {TodoList.entries(todo_list), todo_list}
+  end
+
+  @impl true
+  def handle_call({:entries, date}, todo_list) do
+    {TodoList.entries(todo_list, date), todo_list}
+  end
+
+  @impl true
+  def handle_cast({:add_entry, task}, todo_list) do
+    TodoList.add_entry(todo_list, task)
+  end
+
+  @impl true
+  def handle_cast({:update_entry, entry_id, updater_fn}, todo_list) do
+    TodoList.update_entry(todo_list, entry_id, updater_fn)
+  end
+
+  @impl true
+  def handle_cast({:delete_entry, entry_id}, todo_list) do
+    TodoList.delete_entry(todo_list, entry_id)
+  end
+end
+```
+
+```elixir
+pid = TodoServer.start()
+```
+
+```elixir
+TodoServer.add(pid, TodoList.Task.new("Dentist"))
+TodoServer.add(pid, TodoList.Task.new("Groceries"))
+TodoServer.entries(pid)
+```
+
+## Todo GenServer
+
+```elixir
+defmodule TodoGenServer do
+  use GenServer
+
+  ## Client ##
+
+  def start_link(init_list \\ []) do
+    GenServer.start_link(__MODULE__, init_list)
+  end
+
+  def entries(pid) do
+    GenServer.call(pid, :entries)
+  end
+
+  def entries(pid, date) do
+    GenServer.call(pid, {:entries, date})
+  end
+
+  def add(pid, task) do
+    GenServer.cast(pid, {:add_entry, task})
+  end
+
+  def update(pid, id, updater_fn) do
+    GenServer.cast(pid, {:update_entry, id, updater_fn})
+  end
+
+  def delete(pid, id) do
+    GenServer.cast(pid, {:delete_entry, id})
+  end
+
+  ## API ##
+
+  @impl true
+  def init(init_list \\ []), do: {:ok, TodoList.new(init_list)}
+
+  @impl true
+  def handle_call(:entries, _from, todo_list) do
+    {:reply, TodoList.entries(todo_list), todo_list}
+  end
+
+  @impl true
+  def handle_call({:entries, date}, _from, todo_list) do
+    {:reply, TodoList.entries(todo_list, date), todo_list}
+  end
+
+  @impl true
+  def handle_cast({:add_entry, task}, todo_list) do
+    {:noreply, TodoList.add_entry(todo_list, task)}
+  end
+
+  @impl true
+  def handle_cast({:update_entry, entry_id, updater_fn}, todo_list) do
+    {:noreply, TodoList.update_entry(todo_list, entry_id, updater_fn)}
+  end
+
+  @impl true
+  def handle_cast({:delete_entry, entry_id}, todo_list) do
+    {:noreply, TodoList.delete_entry(todo_list, entry_id)}
+  end
+end
+```
+
+```elixir
+{:ok, pid} = TodoGenServer.start_link()
+```
+
+```elixir
+TodoGenServer.add(pid, TodoList.Task.new("Dentist"))
+TodoGenServer.add(pid, TodoList.Task.new("Groceries"))
+TodoGenServer.entries(pid)
+```
