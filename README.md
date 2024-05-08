@@ -10,3 +10,13 @@
 * [The Book](https://www.manning.com/books/elixir-in-action)
 * [Elixir Forum Reading Club](https://elixirforum.com/t/elixir-in-action-book-club/63088)
 * [Limited-time 45% off discount code](https://elixirforum.com/t/elixir-in-action-book-club/63088): `elixclub24`
+
+## Deploy to Fly
+
+https://fly.io/docs/app-guides/livebook/
+
+```
+fly launch --no-deploy --copy-config
+fly secrets set LIVEBOOK_PASSWORD="<my-super-sekrit-password>"
+fly deploy
+```
